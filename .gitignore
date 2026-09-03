@@ -1,0 +1,5 @@
+images/
+preprocessed/
+outputs/
+__pycache__/
+*.pyc
