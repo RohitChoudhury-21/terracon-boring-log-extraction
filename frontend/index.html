@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DataFactZ Boring Log Extraction</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css?v=20">
+    <script>
+        // Apply saved theme immediately before render to prevent flashing
+        try {
+            if (localStorage.getItem('theme') === 'light') {
+                document.documentElement.classList.add('light-mode');
+            }
+        } catch (e) { }
+    </script>
+</head>
+
+<body>
+    <script>
+        try {
+            if (localStorage.getItem('theme') === 'light') {
+                document.body.classList.add('light-mode');
+            }
+        } catch (e) { }
+    </script>
+    <!-- Top Bar -->
+    <header class="topbar">
+        <div class="topbar-left">
+            <div class="logo" id="topbar-logo" style="display: none;">
+                <img src="assets/datafactz_logo_white 1.png" alt="DataFactZ" class="topbar-logo-img logo-dark">
+                <img src="assets/datafactz_logo 1.png" alt="DataFactZ" class="topbar-logo-img logo-light">
+            </div>
+        </div>
+        <div class="topbar-center">
+            <span class="project-title" id="topbar-title" style="display: none;">BORING LOG EXTRACTION</span>
+        </div>
+        <div class="topbar-right">
+            <div class="theme-toggle">
+                <span class="toggle-icon moon">🌙</span>
+                <label class="switch">
+                    <input type="checkbox" id="theme-toggle-checkbox">
+                    <span class="slider"></span>
+                </label>
+                <span class="toggle-icon sun">☀️</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container: 3-Panel Layout -->
+    <div class="main-container">
+        <!-- Panel 1: Uploaded / Files Panel -->
+        <aside class="panel panel-upload sidebar" id="panel-upload">
+            <div class="panel-header">
+                <div class="panel-title-wrap">
+                    <span class="panel-icon">📁</span>
+                    <h3 class="panel-title">Uploaded</h3>
+                </div>
+                <span class="panel-badge" id="upload-count-badge">0</span>
+            </div>
+            <div class="panel-body upload-body">
+                <button class="btn-accent" id="sidebar-upload-btn">
+                    <span class="btn-plus">＋</span> Upload New
+                </button>
+                <div class="search-box">
+                    <span class="search-icon">🔍</span>
+                    <input type="text" id="document-search" class="search-input" placeholder="Search logs..."
+                        autocomplete="off">
+                    <button class="search-clear-btn" id="search-clear-btn" style="display: none;"
+                        title="Clear search">✕</button>
+                </div>
+                <div class="image-stack" id="image-stack">
+                    <div class="empty-state" id="stack-empty">No documents uploaded</div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Content Area: Hosts Hero, Selected Image View, Processing, or 2-Panel Results -->
+        <main class="content-area">
+            <!-- Hero Section: Centered Brand Logo & Title with Upload Dropzone Card -->
+            <section class="hero" id="hero">
+                <div class="hero-content">
+                    <div class="hero-logo-wrap">
+                        <img src="assets/datafactz_logo_white 1.png" alt="DataFactZ" class="hero-logo-img logo-dark">
+                        <img src="assets/datafactz_logo 1.png" alt="DataFactZ" class="hero-logo-img logo-light">
+                    </div>
+                    <h2 class="hero-title">BORING LOG EXTRACTION</h2>
+                    <div class="upload-dropzone" id="hero-dropzone" tabindex="0" role="button"
+                        aria-label="Upload boring log document">
+                        <div class="dropzone-icon-wrap">
+                            <svg class="dropzone-icon" width="38" height="38" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M4 16.5v2.25A2.25 2.25 0 0 0 6.25 21h11.5A2.25 2.25 0 0 0 20 18.75V16.5" />
+                                <polyline points="7.5 10 12 5.5 16.5 10" />
+                                <line x1="12" y1="5.5" x2="12" y2="16" />
+                            </svg>
+                        </div>
+                        <div class="dropzone-text-row">
+                            <span class="dropzone-prompt">Click, drag, or paste to upload</span>
+                            <span class="dropzone-info-badge"
+                                title="Drag & drop boring log files, paste directly from clipboard, or click to browse">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="12" cy="12" r="10"></circle>
+                                    <line x1="12" y1="16" x2="12" y2="12"></line>
+                                    <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                                </svg>
+                            </span>
+                        </div>
+                        <span class="dropzone-formats">png, jpg & jpeg</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Selected Image View -->
+            <div class="selected-image-view panel-card" id="selected-image-view" style="display: none;">
+                <div class="preview-header">
+                    <h3>Document Preview</h3>
+                    <p>Review the uploaded boring log before extracting</p>
+                </div>
+                <div class="preview-frame">
+                    <img id="selected-image" class="selected-image" alt="Selected Boring Log">
+                </div>
+                <button type="button" class="btn-accent" id="extract-btn">⚡ Run Extraction</button>
+            </div>
+
+            <!-- Processing State -->
+            <div class="processing-state panel-card" id="processing-state" style="display: none;">
+                <div class="spinner"></div>
+                <h3 class="processing-title">AI-powered OCR Extraction</h3>
+                <p id="status-text">Uploading image...</p>
+                <div class="processing-bar">
+                    <div class="processing-bar-inner"></div>
+                </div>
+            </div>
+
+            <!-- Results View: Hosts Panel 2 (PDF View) & Panel 3 (Extraction) -->
+            <div class="results-view" id="results-view" style="display: none;">
+                <!-- Panel 2: PDF / Document View -->
+                <section class="panel panel-viewer" id="panel-viewer">
+                    <div class="panel-header">
+                        <div class="panel-title-wrap">
+                            <span class="panel-icon">📄</span>
+                            <h3 class="panel-title" id="viewer-doc-title">PDF View</h3>
+                        </div>
+                        <div class="viewer-toolbar" id="viewer-toolbar">
+                            <button class="tool-btn" id="zoom-out-btn" title="Zoom Out" aria-label="Zoom out">−</button>
+                            <span class="zoom-level-badge" id="zoom-level-badge">100%</span>
+                            <button class="tool-btn" id="zoom-in-btn" title="Zoom In" aria-label="Zoom in">＋</button>
+                            <button class="tool-btn" id="zoom-reset-btn" title="Reset Zoom"
+                                aria-label="Reset zoom">⟲</button>
+                        </div>
+                    </div>
+                    <div class="panel-body viewer-body">
+                        <div class="results-image-panel">
+                            <img id="result-image" class="result-image" alt="Boring Log Document">
+                        </div>
+                        <div class="viewer-footer-hint">
+                            <span>🔍 Scroll wheel to zoom • Drag to pan</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Panel 3: Extraction / Structured Data -->
+                <section class="panel panel-extraction" id="panel-extraction">
+                    <div class="panel-header">
+                        <div class="panel-title-wrap">
+                            <span class="panel-icon">⚡</span>
+                            <h3 class="panel-title">Extraction</h3>
+                        </div>
+                        <div class="extraction-header-meta">
+                            <button class="btn-save" id="save-changes-btn" title="Save changes to JSON">
+                                <span class="btn-save-icon" id="save-btn-icon">💾</span>
+                                <span class="btn-save-text" id="save-btn-text">Save Changes</span>
+                            </button>
+                            <span class="status-pill status-success" id="extraction-status-pill">● Extracted</span>
+                        </div>
+                    </div>
+                    <div class="panel-body extraction-body results-data-panel" id="results-data-panel">
+                        <!-- Extracted data cards go here -->
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <script src="script.js?v=21"></script>
+</body>
+
+</html>

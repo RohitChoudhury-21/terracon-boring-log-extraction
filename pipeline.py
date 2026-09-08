@@ -1,74 +1,140 @@
 from pathlib import Path
-
+ 
 from validation_input.validate_image import validate_image
 from preprocessing.image_enhancement import preprocess_image
 from ocr.glm_ocr import run_ocr
-from postprocessing.text_cleanup import clean_text
-
-
-def process_image(image_path: str) -> str:
+from postprocessing.text_cleanup import save_outputs
+ 
+ 
+DATA_DIR = Path("data")
+ 
+UPLOADS_DIR = DATA_DIR / "uploads"
+PREPROCESSED_DIR = DATA_DIR / "preprocessed"
+ 
+JSON_OUTPUT_DIR = DATA_DIR / "outputs" / "json"
+MARKDOWN_OUTPUT_DIR = DATA_DIR / "outputs" / "markdown"
+ 
+ 
+def process_image(image_path: str):
     """
-    Process one Terracon boring-log image.
-
+    Complete Terracon boring-log extraction pipeline.
+ 
     Flow:
-        Input validation
-        -> Lightweight preprocessing
-        -> GLM-OCR (one inference)
-        -> Conservative post-processing
-        -> Clean raw text
-
-    Args:
-        image_path: Path to the boring-log image.
-
-    Returns:
-        Clean raw OCR text for handoff to the extraction layer.
+ 
+        Image
+          ↓
+        Validation
+          ↓
+        Preprocessing
+          ↓
+        GLM-OCR
+          ↓
+        Post-processing
+          ↓
+        JSON + Markdown
     """
-
-    # 1. Validate input image
-    validation_result = validate_image(image_path)
-
+ 
+    image_path = Path(image_path)
+ 
+    print("\n========================================")
+    print(" TERRACON BORING LOG OCR PIPELINE")
+    print("========================================\n")
+ 
+    # --------------------------------------------------
+    # 1. IMAGE VALIDATION
+    # --------------------------------------------------
+ 
+    validation_result = validate_image(
+        str(image_path)
+    )
+ 
     if not validation_result["valid"]:
         raise ValueError(
-            f"Invalid input image: {validation_result['reason']}"
+            f"Invalid input image: "
+            f"{validation_result['reason']}"
         )
-
-    print("\n[1/4] Input validation passed.")
-
-    # 2. Lightweight preprocessing
-    preprocessed_path = preprocess_image(image_path)
-
-    print("[2/4] Image preprocessing completed.")
-
-    # 3. Run GLM-OCR once
-    raw_text = run_ocr(preprocessed_path)
-
-    print("[3/4] GLM-OCR completed.")
-
-    # 4. Conservative post-processing
-    final_text = clean_text(raw_text)
-
-    print("[4/4] Post-processing completed.")
-
-    return final_text
-
-
-if __name__ == "__main__":
-    # Local testing only.
-    # Change this filename when testing a different image.
-    test_image = Path("images") / "1-1037R-A.jpg"
-
-    result = process_image(str(test_image))
-
-    print("\n========== CLEAN RAW TEXT ==========\n")
-    print(result)
-
-    # Save only for local testing.
-    output_path = Path("outputs") / f"{test_image.stem}_raw.txt"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    output_path.write_text(
-        result,
-        encoding="utf-8",
+ 
+    print("[1/4] Image validation passed.")
+ 
+    # --------------------------------------------------
+    # 2. PREPROCESSING
+    # --------------------------------------------------
+ 
+    preprocessed_path = preprocess_image(
+        str(image_path),
+        output_dir=str(PREPROCESSED_DIR)
+    )
+ 
+    print(
+        f"[2/4] Image preprocessing completed."
+    )
+ 
+    print(
+        f"      Preprocessed image: "
+        f"{preprocessed_path}"
+    )
+ 
+    # --------------------------------------------------
+    # 3. GLM-OCR
+    # --------------------------------------------------
+ 
+    raw_text = run_ocr(
+        preprocessed_path
+    )
+ 
+    print(
+        "[3/4] GLM-OCR extraction completed."
+    )
+ 
+    # --------------------------------------------------
+    # 4. POST-PROCESSING
+    # --------------------------------------------------
+ 
+    json_path = (
+        JSON_OUTPUT_DIR
+        / f"{image_path.stem}.json"
+    )
+ 
+    markdown_path = (
+        MARKDOWN_OUTPUT_DIR
+        / f"{image_path.stem}.md"
+    )
+ 
+    json_output, _ = save_outputs(
+        raw_text=raw_text,
+        json_path=str(json_path),
+        markdown_path=str(markdown_path),
     )
 
-    print(f"\nSaved output to: {output_path}")
+    print(
+        "[4/4] Post-processing completed."
+    )
+
+    print("\n----------------------------------------")
+    print("OUTPUT FILES")
+    print("----------------------------------------")
+
+    print(
+        f"JSON     : {json_path}"
+    )
+
+    print(
+        f"Markdown : {markdown_path}"
+    )
+
+    print("\nPipeline completed successfully!")
+
+    # Return the JSON string directly so Person B can parse it immediately
+    return json_output
+ 
+ 
+if __name__ == "__main__":
+ 
+    image_path = (
+        UPLOADS_DIR
+        / "1-1037R-A.jpg"
+    )
+ 
+    process_image(
+        str(image_path)
+    )
