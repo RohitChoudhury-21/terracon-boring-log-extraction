@@ -12,7 +12,7 @@ from ..core.config import settings
 from ..core.logging import get_logger
 from ..extraction.field_extractor import extract_fields, extract_fields_from_json
 from ..schemas.boring_log_schema import Document
-from ..pipeline import process_image
+from pipeline import process_image
 
 logger = get_logger(__name__)
 
@@ -194,14 +194,19 @@ async def extract_from_image(upload_id: str, background_tasks: BackgroundTasks):
             def _progress_cb(stage: str):
                 PROGRESS[upload_id] = stage
 
-            result = process_image(image_path, upload_id, _progress_cb)
+            result = process_image(
+                        image_path,
+                        use_preprocessing=False,
+                        output_stem=upload_id,
+                        progress_callback=_progress_cb,
+                    )
 
             raw_text = result.get("cleaned_text") or result.get("raw_text") or ""
-            post_json_path = result.get("post_json_path")
+            postprocessed_json_path = result.get("postprocessed_json_path")
 
             try:
-                if post_json_path and Path(post_json_path).exists():
-                    doc = extract_fields_from_json(Path(post_json_path).read_text(encoding="utf-8"))
+                if postprocessed_json_path and Path(postprocessed_json_path).exists():
+                    doc = extract_fields_from_json(Path(postprocessed_json_path).read_text(encoding="utf-8"))
                 else:
                     doc = extract_fields(raw_text)
             except Exception:
