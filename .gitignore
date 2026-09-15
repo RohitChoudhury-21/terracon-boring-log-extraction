@@ -2,4 +2,5 @@ images/
 preprocessed/
 outputs/
 __pycache__/
-*.pyc
+*.pycdata/uploads/
+data/outputs/

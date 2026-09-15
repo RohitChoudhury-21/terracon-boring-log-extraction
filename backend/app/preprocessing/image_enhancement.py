@@ -16,7 +16,7 @@ def preprocess_image(
 
     The original image is not modified.
 
-    Returns:
+    Returns:6
         Path to the preprocessed image.
     """
 

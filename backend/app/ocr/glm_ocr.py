@@ -81,7 +81,7 @@ def run_ocr(
     try:
         output = model.generate(
             **inputs,
-            max_new_tokens=2048,
+            max_new_tokens=1024,
             do_sample=False,
         )
 

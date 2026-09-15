@@ -1,422 +1,408 @@
-import json
 from pathlib import Path
+import json
 
-from validation.validate_image import validate_image
-from preprocessing.image_enhancement import preprocess_image
-from ocr.glm_ocr import run_ocr
-from postprocessing.text_cleanup import (
+from backend.app.core.config import settings
+
+from backend.app.validation_input.validation_image import validate_image
+from backend.app.preprocessing.image_enhancement import preprocess_image
+from backend.app.ocr.glm_ocr import run_ocr
+from backend.app.postprocessing.text_cleanup import (
     clean_text,
     split_sections,
+    save_outputs,
 )
 
 
-# ------------------------------------------------------------
-# DIRECTORIES
-# ------------------------------------------------------------
+def _build_sectioned_text(structured: dict) -> str:
+    """
+    Build sectioned plain text from split_sections output.
 
-BASE_DIR = Path(__file__).resolve().parent
+    Each section is written using an explicit ## heading.
+    Tables are preserved as tab-separated rows.
+    """
 
-UPLOADS_DIR = BASE_DIR / "data" / "uploads"
+    lines = []
 
-PREPROCESSED_DIR = (
-    BASE_DIR / "data" / "preprocessed"
-)
+    for key, content in structured.items():
 
-OUTPUTS_DIR = (
-    BASE_DIR / "data" / "outputs"
-)
+        if key == "other_sections" and isinstance(content, list):
 
-OCR_OUTPUT_DIR = (
-    OUTPUTS_DIR / "ocr"
-)
+            for section in content:
 
-POSTPROCESSED_OUTPUT_DIR = (
-    OUTPUTS_DIR / "postprocessed"
-)
+                section_name = section.get(
+                    "name",
+                    "OTHER"
+                )
 
-FINAL_OUTPUT_DIR = (
-    OUTPUTS_DIR / "final"
-)
+                lines.append(
+                    f"## {section_name.upper()}"
+                )
+                lines.append("")
 
+                for item in section.get(
+                    "content",
+                    []
+                ):
+                    lines.append(str(item))
 
-# ------------------------------------------------------------
-# CREATE DIRECTORIES
-# ------------------------------------------------------------
+                lines.append("")
 
-PREPROCESSED_DIR.mkdir(
-    parents=True,
-    exist_ok=True
-)
-
-OCR_OUTPUT_DIR.mkdir(
-    parents=True,
-    exist_ok=True
-)
-
-POSTPROCESSED_OUTPUT_DIR.mkdir(
-    parents=True,
-    exist_ok=True
-)
-
-FINAL_OUTPUT_DIR.mkdir(
-    parents=True,
-    exist_ok=True
-)
-
-
-# ------------------------------------------------------------
-# UNIQUE RUN NAME
-# ------------------------------------------------------------
-
-def get_unique_run_stem(
-    image_stem: str
-) -> str:
-
-    existing_stems = set()
-
-    directories = [
-        PREPROCESSED_DIR,
-        OCR_OUTPUT_DIR,
-        POSTPROCESSED_OUTPUT_DIR,
-        FINAL_OUTPUT_DIR,
-    ]
-
-    for directory in directories:
-
-        if not directory.exists():
             continue
 
-        for path in directory.iterdir():
-
-            stem = path.stem
-
-            if stem.endswith("_preprocessed"):
-                stem = stem[
-                    :-len("_preprocessed")
-                ]
-
-            existing_stems.add(stem)
-
-    if image_stem not in existing_stems:
-        return image_stem
-
-    counter = 1
-
-    while True:
-
-        candidate = (
-            f"{counter}.{image_stem}"
+        lines.append(
+            f"## {key.upper()}"
         )
+        lines.append("")
 
-        if candidate not in existing_stems:
-            return candidate
+        if (
+            isinstance(content, dict)
+            and "rows" in content
+        ):
+            for row in content["rows"]:
+                lines.append(str(row))
 
-        counter += 1
+        elif isinstance(content, list):
 
+            for item in content:
+                lines.append(str(item))
 
-# ------------------------------------------------------------
-# PROCESS ONE IMAGE
-# ------------------------------------------------------------
+        elif isinstance(content, str):
+
+            lines.append(content)
+
+        lines.append("")
+
+    return "\n".join(lines)
+
 
 def process_image(
     image_path: str,
-    use_preprocessing: bool = False
+    use_preprocessing: bool = False,
+    output_stem: str | None = None,
+    progress_callback=None,
 ):
+    """
+    Process one Terracon boring-log image.
 
-    print("\n========================================")
-    print(
-        f" Processing: "
-        f"{Path(image_path).name}"
-    )
-    print("========================================")
+    Pipeline:
+
+        Image
+          ↓
+        Validation
+          ↓
+        Optional preprocessing
+          ↓
+        GLM-OCR
+          ↓
+        Raw OCR output
+          ↓
+        Text cleaning
+          ↓
+        Section detection
+          ↓
+        JSON + Markdown
+    """
 
     image_path = Path(image_path)
 
-    run_stem = get_unique_run_stem(
-        image_path.stem
-    )
+    if not image_path.exists():
+        raise FileNotFoundError(
+            f"Input image not found: {image_path}"
+        )
 
-    print(
-        f"Run name: {run_stem}"
-    )
+    stem = output_stem or image_path.stem
 
-    # --------------------------------------------------------
+    print()
+    print("========================================")
+    print(" TERRACON BORING LOG OCR PIPELINE")
+    print("========================================")
+    print()
+
+    # ---------------------------------------------------------
     # 1. IMAGE VALIDATION
-    # --------------------------------------------------------
+    # ---------------------------------------------------------
+
+    if progress_callback:
+        progress_callback("validating")
 
     validation_result = validate_image(
         str(image_path)
     )
 
     if not validation_result["valid"]:
-
-        print(
-            f"[ERROR] "
+        raise ValueError(
+            "Invalid input image: "
             f"{validation_result['reason']}"
         )
 
-        return
-
     print(
-        "[1/5] Image validation passed."
+        "[1/4] Image validation passed."
     )
 
-    # --------------------------------------------------------
-    # 2. IMAGE PREPROCESSING
-    # --------------------------------------------------------
+    # ---------------------------------------------------------
+    # 2. OPTIONAL PREPROCESSING
+    # ---------------------------------------------------------
+
+    ocr_image_path = image_path
 
     if use_preprocessing:
+
+        if progress_callback:
+            progress_callback("preprocessing")
 
         preprocessed_path = preprocess_image(
             str(image_path),
             output_dir=str(
-                PREPROCESSED_DIR
-            )
+                settings.PREPROCESSED_DIR
+            ),
         )
 
-        generated_preprocessed_path = (
-            Path(preprocessed_path)
-        )
-
-        unique_preprocessed_path = (
-            PREPROCESSED_DIR
-            / f"{run_stem}_preprocessed.png"
-        )
-
-        if (
-            generated_preprocessed_path
-            != unique_preprocessed_path
-        ):
-
-            generated_preprocessed_path.rename(
-                unique_preprocessed_path
-            )
-
-        preprocessed_path = str(
-            unique_preprocessed_path
+        ocr_image_path = Path(
+            preprocessed_path
         )
 
         print(
-            "[2/5] Image preprocessing completed."
+            "[2/4] Image preprocessing completed:"
         )
-
         print(
-            f"Preprocessed: "
-            f"{preprocessed_path}"
+            f"      {ocr_image_path}"
         )
 
     else:
 
-        preprocessed_path = str(
-            image_path
-        )
-
         print(
-            "[2/5] Preprocessing skipped "
-            "(use_preprocessing=False)."
+            "[2/4] Preprocessing skipped."
+        )
+        print(
+            "      Using original image for OCR."
         )
 
-    # --------------------------------------------------------
+    # ---------------------------------------------------------
     # 3. GLM-OCR
-    # --------------------------------------------------------
+    # ---------------------------------------------------------
+
+    if progress_callback:
+        progress_callback("ocr")
 
     raw_text = run_ocr(
-        preprocessed_path
+        str(ocr_image_path)
     )
 
-    print(
-        "[3/5] GLM-OCR extraction completed."
+    # ---------------------------------------------------------
+    # SAVE RAW OCR TEXT
+    # ---------------------------------------------------------
+
+    settings.GLM_RAW_TEXT_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
     )
 
-    # --------------------------------------------------------
-    # SAVE RAW OCR OUTPUT
-    # --------------------------------------------------------
-
-    raw_ocr_path = (
-        OCR_OUTPUT_DIR
-        / f"{run_stem}.txt"
+    raw_text_path = (
+        settings.GLM_RAW_TEXT_DIR
+        / f"{stem}.txt"
     )
 
-    raw_ocr_path.write_text(
+    raw_text_path.write_text(
         raw_text,
-        encoding="utf-8"
+        encoding="utf-8",
+    )
+
+    # ---------------------------------------------------------
+    # SAVE RAW OCR JSON
+    # ---------------------------------------------------------
+
+    settings.GLM_RAW_JSON_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    raw_json_path = (
+        settings.GLM_RAW_JSON_DIR
+        / f"{stem}.json"
+    )
+
+    raw_json = {
+        "document_name": image_path.name,
+        "ocr_model": settings.MODEL_NAME,
+        "raw_text": raw_text,
+    }
+
+    raw_json_path.write_text(
+        json.dumps(
+            raw_json,
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
     )
 
     print(
-        f"Raw OCR saved: "
-        f"{raw_ocr_path}"
+        "[3/4] GLM-OCR extraction completed."
     )
 
-    # --------------------------------------------------------
+    print(
+        f"      Raw text: {raw_text_path}"
+    )
+
+    print(
+        f"      Raw JSON: {raw_json_path}"
+    )
+
+    # ---------------------------------------------------------
     # 4. POST-PROCESSING
-    # --------------------------------------------------------
+    # ---------------------------------------------------------
+
+    if progress_callback:
+        progress_callback("postprocessing")
 
     cleaned_text = clean_text(
         raw_text
     )
 
-    sections = split_sections(
+    structured_data = split_sections(
         cleaned_text
     )
 
-    print(
-        "[4/5] Post-processing completed."
+    # ---------------------------------------------------------
+    # SAVE POSTPROCESSED RAW TEXT
+    # ---------------------------------------------------------
+
+    settings.POSTPROCESSED_RAW_TEXT_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
     )
 
-    # --------------------------------------------------------
-    # SAVE POST-PROCESSED TEXT
-    # --------------------------------------------------------
-
-    postprocessed_path = (
-        POSTPROCESSED_OUTPUT_DIR
-        / f"{run_stem}.txt"
+    sectioned_text = _build_sectioned_text(
+        structured_data
     )
 
-    postprocessed_path.write_text(
-        cleaned_text,
-        encoding="utf-8"
+    postprocessed_text_path = (
+        settings.POSTPROCESSED_RAW_TEXT_DIR
+        / f"{stem}.txt"
     )
 
-    print(
-        f"Post-processed text saved: "
-        f"{postprocessed_path}"
+    postprocessed_text_path.write_text(
+        sectioned_text,
+        encoding="utf-8",
     )
 
-    # --------------------------------------------------------
-    # 5. FINAL JSON
-    # --------------------------------------------------------
+    # ---------------------------------------------------------
+    # SAVE JSON + MARKDOWN
+    # USING EXISTING save_outputs()
+    # ---------------------------------------------------------
 
-    final_json_path = (
-        FINAL_OUTPUT_DIR
-        / f"{run_stem}.json"
+    postprocessed_json_path = (
+        settings.POSTPROCESSED_JSON_DIR
+        / f"{stem}.json"
     )
 
-    final_data = {
-        "document_name": image_path.name,
-        "sections": sections,
-    }
+    postprocessed_markdown_path = (
+        settings.POSTPROCESSED_MARKDOWN_DIR
+        / f"{stem}.md"
+    )
 
-    final_json_path.write_text(
-        json.dumps(
-            final_data,
-            indent=4,
-            ensure_ascii=False
+    save_outputs(
+        raw_text=raw_text,
+        json_path=str(
+            postprocessed_json_path
         ),
-        encoding="utf-8"
+        markdown_path=str(
+            postprocessed_markdown_path
+        ),
+        document_name=stem,
     )
+
+    # ---------------------------------------------------------
+    # FINALIZATION
+    # ---------------------------------------------------------
+
+    if progress_callback:
+        progress_callback("finalizing")
 
     print(
-        "[5/5] Final JSON created."
+        "[4/4] Post-processing completed."
     )
 
+    print()
+    print("Output files:")
     print(
-        f"Final JSON saved: "
-        f"{final_json_path}"
+        f"  Raw OCR text       : {raw_text_path}"
     )
-
-    # --------------------------------------------------------
-    # SUMMARY
-    # --------------------------------------------------------
-
-    print("\n----------------------------------------")
-    print("PROCESS SUMMARY")
-    print("----------------------------------------")
-
     print(
-        f"Input image      : "
-        f"{image_path}"
+        f"  Raw OCR JSON       : {raw_json_path}"
     )
-
     print(
-        f"Preprocessing    : "
-        f"{'ON' if use_preprocessing else 'OFF'}"
+        f"  Postprocessed text : {postprocessed_text_path}"
     )
-
     print(
-        f"Raw OCR          : "
-        f"{raw_ocr_path}"
+        f"  Postprocessed JSON : {postprocessed_json_path}"
     )
-
     print(
-        f"Post-processed   : "
-        f"{postprocessed_path}"
+        f"  Markdown           : {postprocessed_markdown_path}"
     )
+    print()
 
-    print(
-        f"Final JSON       : "
-        f"{final_json_path}"
-    )
+    return {
+        "document_name": image_path.name,
+        "raw_text": raw_text,
+        "cleaned_text": cleaned_text,
+        "sectioned_text": sectioned_text,
+        "structured_data": structured_data,
 
-    print("----------------------------------------")
+        "raw_text_path": str(
+            raw_text_path
+        ),
 
+        "raw_json_path": str(
+            raw_json_path
+        ),
 
-# ------------------------------------------------------------
-# FIND INPUT IMAGES
-# ------------------------------------------------------------
+        "postprocessed_text_path": str(
+            postprocessed_text_path
+        ),
 
-def find_input_images():
+        "postprocessed_json_path": str(
+            postprocessed_json_path
+        ),
 
-    supported_formats = {
-        ".jpg",
-        ".jpeg",
-        ".png",
+        "postprocessed_markdown_path": str(
+            postprocessed_markdown_path
+        ),
+
+        "preprocessing_used": use_preprocessing,
+
+        "ocr_image_path": str(
+            ocr_image_path
+        ),
     }
 
-    if not UPLOADS_DIR.exists():
-        return []
 
-    return sorted(
-        [
-            path
-            for path in UPLOADS_DIR.iterdir()
-            if (
-                path.is_file()
-                and path.suffix.lower()
-                in supported_formats
-            )
-        ]
-    )
+if __name__ == "__main__":
 
-
-# ------------------------------------------------------------
-# MAIN
-# ------------------------------------------------------------
-
-def main():
+    # One-image-at-a-time testing
 
     image_name = "1-1189R.jpeg"
 
     image_path = (
-        UPLOADS_DIR / image_name
+        settings.UPLOAD_DIR
+        / image_name
     )
-
-    if not image_path.exists():
-
-        print(
-            f"Image not found: "
-            f"{image_path}"
-        )
-
-        return
 
     try:
 
-        process_image(
-            str(image_path),
-            use_preprocessing=False
+        result = process_image(
+            image_path=str(image_path),
+            use_preprocessing=False,
+        )
+
+        print(
+            "Pipeline completed successfully."
         )
 
     except Exception as exc:
 
+        print()
         print(
-            f"\n[ERROR] Failed to process "
-            f"{image_path.name}: {exc}"
+            "Pipeline failed:"
         )
-
-    print("\n========================================")
-    print(" PROCESSING COMPLETED")
-    print("========================================")
-
-
-if __name__ == "__main__":
-    main()
+        print(exc)
