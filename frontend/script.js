@@ -46,6 +46,8 @@ let uploads = []; // from server manifest
 let selectedUploadId = null;
 let currentStructuredData = null;
 let progressInterval = null;
+let extractionStates = {};   // { uploadId: 'processing' | 'completed' | 'failed' }
+let activeExtractionId = null;  // which upload is currently being polled
 
 // Theme Initialization & Persistence
 function applyTheme(isLight) {
@@ -175,87 +177,75 @@ fileInput.addEventListener('change', () => {
 async function uploadFile(file) {
     if (!file) return;
     selectedFile = file;
-    transitionToWorkspace();
-    selectedImageView.style.display = 'flex';
-    processingState.style.display = 'none';
-    resultsView.style.display = 'none';
-    selectedImage.src = URL.createObjectURL(file);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const resp = await fetch(`${API_BASE_URL}/api/upload`, {
+            method: 'POST',
+            body: formData,
+        });
+        if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`);
+        const data = await resp.json();
+
+        // Refresh sidebar so the new image shows up immediately
+        await fetchUploads();
+
+        // Select the newly uploaded image (shows preview + Extract button)
+        selectUpload(data.upload_id);
+    } catch (err) {
+        console.error(err);
+        showToast('Upload failed.', true);
+    }
 }
 
 if (extractBtn) {
     extractBtn.addEventListener('click', (e) => {
         e.preventDefault();
-        console.log('Extract clicked');
+        console.log('Extract clicked, uploadId =', selectedUploadId);
         if (selectedFile) {
-            processExtraction(selectedFile);
+            processExtraction(selectedUploadId);
         } else {
-            console.warn('No file selected for extraction');
+            showToast('Please select an uploaded image first.', true);
         }
     });
 }
 
-async function processExtraction(file) {
-    if (!file) {
-        console.warn('processExtraction called with no file');
-        return;
-    }
+async function processExtraction(uploadId) {
+    if (!uploadId) return;
 
-    const uploadId = Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+    // Remember we're processing this upload
+    extractionStates[uploadId] = 'processing';
+    activeExtractionId = uploadId;
+    selectedUploadId = uploadId;
 
+    // Show processing state
     selectedImageView.style.display = 'none';
     processingState.style.display = 'flex';
+    resultsView.style.display = 'none';
     const processingTitle = document.querySelector('.processing-title');
     if (processingTitle) processingTitle.textContent = 'AI-powered OCR Extraction';
     startProgressPolling(uploadId);
 
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('upload_id', uploadId);
-
-    console.log('Sending fetch');
     try {
-        const response = await fetch(`${API_BASE_URL}/api/extract`, {
+        const response = await fetch(`${API_BASE_URL}/api/extract/${uploadId}`, {
             method: 'POST',
-            body: formData,
         });
         if (!response.ok) throw new Error(`Server responded ${response.status}`);
-        const data = await response.json();
-
-        if (progressInterval) {
-            clearInterval(progressInterval);
-            progressInterval = null;
-        }
-        if (statusText) statusText.textContent = 'Completed!';
-        processingState.style.display = 'none';
-        resultsView.style.display = 'flex';
-        if (viewerDocTitle && file) {
-            viewerDocTitle.textContent = file.name || 'PDF View';
-        }
-        resultImage.src = URL.createObjectURL(file);
-        resetViewer();
-        renderExtractedData(data);
-
-        if (extractionStatusPill) {
-            extractionStatusPill.textContent = '● Extracted';
-            extractionStatusPill.className = 'status-pill status-success';
-        }
-
-        await fetchUploads();
-        if (uploads.length > 0) {
-            const matching = uploads.slice().reverse().find(u => u.original_filename === file.name);
-            selectedUploadId = matching ? matching.id : uploads[uploads.length - 1].id;
-            renderSidebar();
-        }
+        // Backend runs in background; UI updates via polling.
     } catch (err) {
         console.error(err);
-        if (progressInterval) {
+        extractionStates[uploadId] = 'failed';
+        if (activeExtractionId === uploadId && progressInterval) {
             clearInterval(progressInterval);
             progressInterval = null;
         }
-        if (statusText) statusText.textContent = 'Error occurred';
-        processingState.style.display = 'none';
-        resultsView.style.display = 'flex';
-        resultsDataPanel.innerHTML = '<div class="error-message">Something went wrong. Please try again.</div>';
+        if (selectedUploadId === uploadId) {
+            processingState.style.display = 'none';
+            resultsView.style.display = 'flex';
+            resultsDataPanel.innerHTML = '<div class="error-message">Extraction failed.</div>';
+        }
     }
 }
 
@@ -278,37 +268,37 @@ function startProgressPolling(uploadId) {
     }, 1000);
 }
 
-function updateStatusText(stage) {
+async function updateStatusText(stage) {
     if (!statusText) return;
     switch (stage) {
-        case 'uploading':
-            statusText.textContent = 'Uploading image...';
-            break;
-        case 'processing':
-            statusText.textContent = 'Processing image...';
-            break;
-        case 'extracting':
-            statusText.textContent = 'Extracting text...';
-            break;
-        case 'finalizing':
-            statusText.textContent = 'Finalizing result...';
-            break;
+        case 'uploading': statusText.textContent = 'Uploading image...'; break;
+        case 'queued': statusText.textContent = 'Queued...'; break;
+        case 'validating': statusText.textContent = 'Validating image...'; break;
+        case 'preprocessing': statusText.textContent = 'Preprocessing image...'; break;
+        case 'ocr': statusText.textContent = 'Extracting text (GLM-OCR)...'; break;
+        case 'postprocessing': statusText.textContent = 'Post-processing...'; break;
+        case 'extracting': statusText.textContent = 'Parsing fields...'; break;
+        case 'saving': statusText.textContent = 'Saving...'; break;
+        case 'finalizing': statusText.textContent = 'Finalizing results...'; break;
         case 'completed':
             statusText.textContent = 'Completed!';
-            if (progressInterval) {
-                clearInterval(progressInterval);
-                progressInterval = null;
+            if (progressInterval) { clearInterval(progressInterval); progressInterval = null; }
+            if (activeExtractionId) {
+                extractionStates[activeExtractionId] = 'completed';
+            }
+            const completedId = activeExtractionId;
+            activeExtractionId = null;
+            await fetchUploads();
+            // If the user is still on this upload, load the result
+            if (selectedUploadId && extractionStates[selectedUploadId] === 'completed') {
+                selectUpload(selectedUploadId);
             }
             break;
         case 'failed':
             statusText.textContent = 'Error occurred';
-            if (progressInterval) {
-                clearInterval(progressInterval);
-                progressInterval = null;
-            }
+            if (progressInterval) { clearInterval(progressInterval); progressInterval = null; }
             break;
-        default:
-            statusText.textContent = 'Processing...';
+        default: statusText.textContent = 'Processing...';
     }
 }
 
@@ -350,12 +340,29 @@ function renderSidebar() {
 
     stackEmpty.style.display = 'none';
     filtered.forEach(upload => {
-        const div = document.createElement('div');
-        div.className = 'image-stack-item';
-        if (upload.id === selectedUploadId) div.classList.add('active');
-        div.textContent = upload.original_filename || upload.id;
-        div.addEventListener('click', () => selectUpload(upload.id));
-        imageStack.appendChild(div);
+        const row = document.createElement('div');
+        row.className = 'image-stack-item';
+        if (upload.id === selectedUploadId) row.classList.add('active');
+
+        // Name (clickable to select)
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'item-name';
+        nameSpan.textContent = upload.original_filename || upload.id;
+        nameSpan.addEventListener('click', () => selectUpload(upload.id));
+        row.appendChild(nameSpan);
+
+        // Delete button
+        const delBtn = document.createElement('button');
+        delBtn.className = 'item-delete';
+        delBtn.textContent = '×';
+        delBtn.title = 'Delete this upload';
+        delBtn.addEventListener('click', (e) => {
+            e.stopPropagation(); // prevent selecting when deleting
+            deleteUpload(upload.id);
+        });
+        row.appendChild(delBtn);
+
+        imageStack.appendChild(row);
     });
 }
 
@@ -371,28 +378,79 @@ async function selectUpload(uploadId) {
     resultsView.style.display = 'none';
     transitionToWorkspace();
 
+    // Fetch and set the image immediately for all cases
+    let imageUrl = null;
     try {
-        const [resultResp, imageResp] = await Promise.all([
-            fetch(`${API_BASE_URL}/api/uploads/${uploadId}/result`),
-            fetch(`${API_BASE_URL}/api/uploads/${uploadId}/image`)
-        ]);
-        if (!resultResp.ok || !imageResp.ok) throw new Error('Failed to load upload data');
-        const resultData = await resultResp.json();
+        const imageResp = await fetch(`${API_BASE_URL}/api/uploads/${uploadId}/image`);
         const imageBlob = await imageResp.blob();
-        const imageUrl = URL.createObjectURL(imageBlob);
-
-        resultsView.style.display = 'flex';
-        resultImage.src = imageUrl;
-        resetViewer();
-        renderExtractedData(resultData.structured_data);
-        if (extractionStatusPill) {
-            extractionStatusPill.textContent = '● Extracted';
-            extractionStatusPill.className = 'status-pill status-success';
-        }
+        imageUrl = URL.createObjectURL(imageBlob);
     } catch (err) {
-        console.error(err);
-        resultsView.style.display = 'flex';
-        resultsDataPanel.innerHTML = '<div class="error-message">Failed to load this upload.</div>';
+        console.error('Failed to load image:', err);
+    }
+
+    // Case 1: extraction is currently running for this upload
+    if (extractionStates[uploadId] === 'processing') {
+        activeExtractionId = uploadId;
+        processingState.style.display = 'flex';
+        if (statusText) statusText.textContent = 'Processing...';
+        startProgressPolling(uploadId);
+        return;
+    }
+
+    // Case 2: extraction was completed → show results
+    if (extractionStates[uploadId] === 'completed' || (currentUpload && currentUpload.status === 'completed')) {
+        try {
+            const resultResp = await fetch(`${API_BASE_URL}/api/uploads/${uploadId}/result`);
+            if (!resultResp.ok) throw new Error('Failed to load result');
+            const resultData = await resultResp.json();
+            resultsView.style.display = 'flex';
+            if (imageUrl) resultImage.src = imageUrl;
+            resetViewer();
+            renderExtractedData(resultData.structured_data);
+            if (extractionStatusPill) {
+                extractionStatusPill.textContent = '● Extracted';
+                extractionStatusPill.className = 'status-pill status-success';
+            }
+        } catch (err) {
+            console.error(err);
+            resultsView.style.display = 'flex';
+            resultsDataPanel.innerHTML = '<div class="error-message">Failed to load this upload.</div>';
+        }
+        return;
+    }
+
+    // Case 3: not yet extracted → show preview + Extract button
+    if (imageUrl) selectedImage.src = imageUrl;
+    selectedImageView.style.display = 'flex';
+    extractBtn.onclick = () => processExtraction(uploadId);
+}
+
+async function deleteUpload(uploadId) {
+    if (!confirm('Delete this upload and all its extracted data?')) return;
+
+    try {
+        const resp = await fetch(`${API_BASE_URL}/api/uploads/${uploadId}`, {
+            method: 'DELETE'
+        });
+        if (!resp.ok) throw new Error(`Server responded ${resp.status}`);
+
+        // If the deleted upload was selected, clear the results panel
+        if (selectedUploadId === uploadId) {
+            selectedUploadId = null;
+            resultsDataPanel.innerHTML = '';
+            resultImage.src = '';
+            resultsView.style.display = 'none';
+            selectedImageView.style.display = 'none';
+            hero.style.display = 'flex';
+            topbarLogo.style.display = 'none';
+            topbarTitle.style.display = 'none';
+        }
+
+        // Refresh sidebar
+        await fetchUploads();
+    } catch (err) {
+        console.error('Delete failed:', err);
+        showToast('Failed to delete upload.', true);
     }
 }
 
@@ -629,6 +687,12 @@ function renderSection(section, sectionIdx) {
         card.className = 'section-card';
         card.innerHTML = `<div class="section-title">${escapeHtml(section.name)}</div>${rowsHtml}`;
         resultsDataPanel.appendChild(card);
+        if (section.raw_text) {
+            const details = document.createElement('details');
+            details.className = 'raw-text-details';
+            details.innerHTML = `<summary>Show Raw OCR Text</summary><pre>${escapeHtml(section.raw_text)}</pre>`;
+            resultsDataPanel.appendChild(details);
+        }
 
     } else if (section.type === 'table') {
         let tableHtml = `<div class="section-card"><div class="section-title">${escapeHtml(section.name)}</div><div class="table-container"><table>`;
@@ -658,6 +722,13 @@ function renderSection(section, sectionIdx) {
         }
         tableHtml += '</table></div></div>';
         resultsDataPanel.insertAdjacentHTML('beforeend', tableHtml);
+        if (section.raw_text) {
+            const details = document.createElement('details');
+            details.className = 'raw-text-details';
+            details.innerHTML = `<summary>Show Raw OCR Text</summary><pre>${escapeHtml(section.raw_text)}</pre>`;
+            resultsDataPanel.appendChild(details);
+
+        }
 
     } else if (section.type === 'raw_text') {
         const text = section.text || '';
@@ -667,6 +738,12 @@ function renderSection(section, sectionIdx) {
                           <pre class="raw-section-text" contenteditable="true" spellcheck="false"
                                data-section-index="${sectionIdx}" data-field="text">${escapeHtml(text)}</pre>`;
         resultsDataPanel.appendChild(card);
+        if (section.raw_text) {
+            const details = document.createElement('details');
+            details.className = 'raw-text-details';
+            details.innerHTML = `<summary>Show Raw OCR Text</summary><pre>${escapeHtml(section.raw_text)}</pre>`;
+            resultsDataPanel.appendChild(details);
+        }
     }
 }
 
@@ -894,3 +971,8 @@ function escapeHtml(text) {
 (async () => {
     await fetchUploads();
 })();
+// Refresh sidebar when the browser tab regains focus
+// (useful when uploads happen outside the frontend, e.g. via Swagger)
+window.addEventListener('focus', () => {
+    fetchUploads();
+});

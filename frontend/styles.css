@@ -1365,3 +1365,60 @@ body.light-mode .toast-notification {
 body.light-mode .toast-notification.toast-error {
     border-left-color: #E8442C;
 }
+
+.raw-text-details {
+    margin-top: 10px;
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    background: var(--placeholder-bg);
+}
+
+.raw-text-details summary {
+    cursor: pointer;
+    color: var(--accent-orange);
+    font-weight: 600;
+}
+
+.raw-text-details pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: monospace;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.image-stack-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.image-stack-item .item-name {
+    flex: 1;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.image-stack-item .item-delete {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    line-height: 1;
+    padding: 4px 8px;
+    cursor: pointer;
+    border-radius: 4px;
+    opacity: 0.6;
+    transition: opacity 0.2s, background 0.2s;
+}
+
+.image-stack-item .item-delete:hover {
+    color: #ff6b6b;
+    background: rgba(255, 107, 107, 0.1);
+    opacity: 1;
+}

@@ -185,6 +185,9 @@ def extract_key_value_pairs(text_block: str) -> Dict[str, str]:
             elif ch in ')]}':
                 paren_depth = max(0, paren_depth - 1)
             elif ch == ':' and paren_depth == 0:
+                # Ignore colons in timestamps like 8:00 or 10:15
+                if idx > 0 and idx + 1 < len(line) and line[idx-1].isdigit() and line[idx+1].isdigit():
+                    continue
                 colon_indices.append(idx)
 
         if not colon_indices:
@@ -240,21 +243,21 @@ def normalize_key(key: str) -> str:
 def split_sections(text: str) -> Dict[str, str]:
     text = clean_html_entities(text)
     marker_patterns = {
-        "header": r"^##\s*HEADER\s*$",
-        "boring_advancement": r"^##\s*BORING_ADVANCEMENT\s*$",
-        "sample_data_table": r"^##\s*SAMPLE_DATA_TABLE\s*$",
-        "lithology_data_table": r"^##\s*LITHOLOGY_DATA_TABLE\s*$",
-        "surface_cover_thickness": r"^##\s*SURFACE_COVER_THICKNESS\s*$",
-        "water_level_observations": r"^##\s*WATER_LEVEL_OBSERVATIONS\s*$",
-        "boring_abandonment": r"^##\s*BORING_ABANDONMENT\s*$",
-        "additional_remarks": r"^##\s*ADDITIONAL_REMARKS\s*$",
-        "sheet_info": r"^##\s*SHEET_INFO\s*$",
+        "header": r"^##\s*HEADER\b",
+        "boring_advancement": r"^##\s*BORING[_\s]+ADVANCEMENT\b",
+        "boring_log_table": r"^##\s*(BORING_LOG_TABLE|BORING_TABLE|UNIFIED_TABLE|LOG_TABLE)\b",
+        "sample_data_table": r"^##\s*SAMPLE[_\s]+DATA[_\s]+TABLE\b",
+        "lithology_data_table": r"^##\s*LITHOLOGY[_\s]+(?:DATA[_\s]+)?TABLE\b",
+        "surface_cover_thickness": r"^##\s*SURFACE[_\s]+COVER(?:[_\s]+(?:&|AND)[_\s]+THICKNESS)?\b",
+        "water_level_observations": r"^##\s*WATER[_\s]+LEVEL(?:[_\s]+OBSERVATIONS)?\b",
+        "boring_abandonment": r"^##\s*BORING[_\s]+ABANDONMENT\b",
+        "additional_remarks": r"^(?:##\s*)?(?:terracon\s*)?additional\s*remarks\b",
+        "sheet_info": r"^##\s*SHEET[_\s]+INFO\b",
     }
 
     sections = {}
     current_section = None
     current_lines = []
-    marker_found = False
 
     for line in text.splitlines():
         line_stripped = line.strip()
@@ -262,33 +265,53 @@ def split_sections(text: str) -> Dict[str, str]:
             continue
 
         matched_section = None
+        # 1. Try explicit markdown headers
         for sec, pattern in marker_patterns.items():
             if re.match(pattern, line_stripped, re.IGNORECASE):
                 matched_section = sec
-                marker_found = True
                 break
 
-        if not matched_section and not marker_found:
-            keyword_patterns = {
-                "boring_advancement": r"(boring\s*advancement|advancement|start\s*date|finish\s*date)",
-                "sample_data_table": r"^\s*sample\b|penetration\s*record",
-                "lithology_data_table": r"(sample\s*description\s*and\s*lithology|lithology)",
-                "surface_cover_thickness": r"(surface\s*cover\s*&\s*thickness|surface\s*cover)",
-                "water_level_observations": r"(water\s*level\s*observations|water\s*level)",
-                "boring_abandonment": r"(boring\s*abandonment|abandonment)",
-                "additional_remarks": r"(additional\s*remarks)",
-                "sheet_info": r"(sheet\s*:\s*\d+\s+of\s+\d+)"
-            }
-            for sec, pattern in keyword_patterns.items():
-                if re.search(pattern, line_stripped, re.IGNORECASE):
-                    matched_section = sec
-                    break
+        # 2. Try natural text headings (only if line is a header and not a key-value data row)
+        if not matched_section:
+            clean_lower = re.sub(r"^#+\s*", "", line_stripped.lower()).strip()
+            if (clean_lower.startswith("depth") and "lithology" in clean_lower) or clean_lower.startswith("sample description and lithology") or re.match(r"^lithology\s*(?:data\s*table|description)?", clean_lower):
+                matched_section = "lithology_data_table"
+            elif re.search(r"\bsample\b", clean_lower) and re.search(r"\b(lithology|description)\b", clean_lower):
+                matched_section = "boring_log_table"
+            elif "\t" in line and re.search(r"\b(from\b.*?\bto|blow|blows|penetration|recovery)\b", clean_lower):
+                if re.search(r"\b(lithology|description)\b", clean_lower):
+                    matched_section = "boring_log_table"
+                else:
+                    matched_section = "sample_data_table"
+            elif re.match(r"^sample\s*(?:data\s*table|record|no\.?|collection)", clean_lower) and not re.search(r"^\d+\s+\d+", clean_lower):
+                matched_section = "sample_data_table"
+            elif re.match(r"^boring\s*advancement\b", clean_lower):
+                matched_section = "boring_advancement"
+            elif re.match(r"^surface\s*cover\b", clean_lower):
+                matched_section = "surface_cover_thickness"
+            elif re.match(r"^water\s*level\b", clean_lower):
+                matched_section = "water_level_observations"
+            elif re.match(r"^boring\s*abandonment\b", clean_lower):
+                matched_section = "boring_abandonment"
+            elif re.match(r"^(?:terracon\s*)?additional\s*remarks\b", clean_lower):
+                matched_section = "additional_remarks"
+            elif re.match(r"^sheet\s*:\s*\d+\s+of\s+\d+", clean_lower) or re.match(r"^sheet\s+\d+\s+of\s+\d+", clean_lower):
+                matched_section = "sheet_info"
 
         if matched_section:
             if current_section and current_lines:
                 sections[current_section] = "\n".join(current_lines).strip()
             current_section = matched_section
-            current_lines = []
+            if matched_section in ("boring_log_table", "sample_data_table", "lithology_data_table"):
+                current_lines = [line]
+            elif matched_section == "additional_remarks":
+                if ":" in line:
+                    after_colon = line.split(":", 1)[1].strip().lstrip("-").strip()
+                    current_lines = [after_colon] if after_colon else []
+                else:
+                    current_lines = []
+            else:
+                current_lines = []
         else:
             if current_section:
                 current_lines.append(line)
@@ -344,8 +367,11 @@ def _parse_table(lines: List[str]) -> Tuple[List[str], List[Dict[str, Optional[s
 
     # Otherwise tab-separated
     header_idx = 0
-    header_parts = re.split(r'\t+|\s{2,}', clean_lines[0].strip())
-    columns = [part.strip() for part in header_parts if part.strip()]
+    if "\t" in clean_lines[0]:
+        header_parts = [p.strip() for p in clean_lines[0].split("\t")]
+    else:
+        header_parts = [p.strip() for p in re.split(r'\s{2,}', clean_lines[0].strip())]
+    columns = [part for part in header_parts if part]
     if not columns:
         columns = [f"Column {j+1}" for j in range(5)]
 
@@ -353,8 +379,10 @@ def _parse_table(lines: List[str]) -> Tuple[List[str], List[Dict[str, Optional[s
     for line in clean_lines[1:]:
         if not line.strip():
             continue
-        parts = re.split(r'\t+|\s{2,}', line.strip())
-        parts = [p.strip() for p in parts]
+        if "\t" in line:
+            parts = [p.strip() for p in line.split("\t")]
+        else:
+            parts = [p.strip() for p in re.split(r'\s{2,}', line.strip())]
         row = {}
         for j, col in enumerate(columns):
             row[col] = parts[j] if j < len(parts) else ""
@@ -364,76 +392,64 @@ def _parse_table(lines: List[str]) -> Tuple[List[str], List[Dict[str, Optional[s
 
 
 def _parse_sample_table_single_space(lines: List[str]) -> Tuple[List[str], List[Dict[str, Optional[str]]]]:
-    columns = ["No.", "From", "To", "Type", "Blow 1", "Blow 2", "Blow 3", "Blow 4", "Recovery"]
+    columns = ["No.", "From", "To", "Type", "Blow 1", "Blow 2", "Blow 3", "Blow 4", "Recovery", "Depth From", "Depth To", "Description"]
     rows = []
     for line in lines:
         line = line.strip()
         if line.startswith("- "):
             line = line[2:].strip()
-        if not line or line.lower().startswith("sample") or line.lower().startswith("no.") or line.lower().startswith("penetration"):
+        if not line or line.startswith("#") or line.lower().startswith("sample") or line.lower().startswith("no.") or line.lower().startswith("penetration"):
             continue
 
-        # Check if line has tab or multi-space delimiters
-        if "\t" in line or re.search(r'\s{2,}', line):
-            parts = [p.strip() for p in re.split(r'\t+|\s{2,}', line) if p.strip()]
-            if len(parts) >= 3:
-                # Filter out single dash placeholders if needed, or map directly
-                cleaned_parts = [p for p in parts if p != "-"]
-                if len(cleaned_parts) >= 3:
-                    s_no = cleaned_parts[0] if len(cleaned_parts) > 0 else ""
-                    f_d = cleaned_parts[1] if len(cleaned_parts) > 1 else ""
-                    t_d = cleaned_parts[2] if len(cleaned_parts) > 2 else ""
-                    s_t = cleaned_parts[3] if len(cleaned_parts) > 3 and not cleaned_parts[3].isdigit() else ""
-                    # find blow count numbers
-                    num_idx = 4 if s_t else 3
-                    nums = [p for p in cleaned_parts[num_idx:] if p.isdigit() or re.match(r'^\d+[\'"]?$', p)]
-                    b1 = nums[0] if len(nums) > 0 else ""
-                    b2 = nums[1] if len(nums) > 1 else ""
-                    b3 = nums[2] if len(nums) > 2 else ""
-                    b4 = nums[3] if len(nums) > 3 else ""
-                    rec = nums[4] if len(nums) > 4 else (cleaned_parts[-1] if '"' in cleaned_parts[-1] else "")
-                    rows.append({
-                        "No.": s_no,
-                        "From": f_d,
-                        "To": t_d,
-                        "Type": s_t,
-                        "Blow 1": b1,
-                        "Blow 2": b2,
-                        "Blow 3": b3,
-                        "Blow 4": b4,
-                        "Recovery": rec,
-                    })
-                    continue
-
-        match = re.match(r'^(\d+)\s+(\d+(?:\.\d+)?[\'"]?)\s+(\d+(?:\.\d+)?[\'"]?)\s*([A-Za-z]{1,3})?\s*(.*)$', line)
-        if not match:
+        tokens = line.split()
+        if len(tokens) < 3 or not tokens[0].isdigit():
             continue
-        sample_no = match.group(1)
-        from_depth = match.group(2)
-        to_depth = match.group(3)
-        sample_type = match.group(4) or ""
-        rest = match.group(5).strip()
-        tokens = rest.split()
+
+        sample_no = tokens[0]
+        from_depth = tokens[1]
+        to_depth = tokens[2]
+        rest_tokens = tokens[3:]
+
         blows = []
         recovery = ""
-        for token in tokens:
-            if token.isdigit() and len(blows) < 4:
-                blows.append(token)
-            elif '"' in token and not recovery:
-                recovery = token
+        sample_type = ""
+        desc_tokens = []
+        idx = 0
+        while idx < len(rest_tokens):
+            tok = rest_tokens[idx]
+            clean_tok = tok.strip('.,()')
+            if tok in {"-", "–", "--", "---", "_"}:
+                idx += 1
+                continue
+            if sample_type == "" and clean_tok.isalpha() and len(clean_tok) <= 3:
+                sample_type = clean_tok
+            elif clean_tok.isdigit() and len(blows) < 4 and not desc_tokens:
+                blows.append(clean_tok)
+            elif '"' in tok and recovery == "":
+                recovery = tok
+            elif clean_tok.isdigit() and len(blows) == 4 and not recovery:
+                recovery = clean_tok
+            else:
+                desc_tokens.append(tok)
+            idx += 1
 
         while len(blows) < 4:
             blows.append("")
+
+        desc = " ".join(desc_tokens).strip()
         row = {
             "No.": sample_no,
             "From": from_depth,
             "To": to_depth,
-            "Type": sample_type,
+            "Type": sample_type,  
             "Blow 1": blows[0],
             "Blow 2": blows[1],
             "Blow 3": blows[2],
             "Blow 4": blows[3],
             "Recovery": recovery,
+            "Depth From": from_depth,
+            "Depth To": to_depth,
+            "Description": desc,
         }
         rows.append(row)
     return columns, rows
@@ -446,7 +462,17 @@ def _parse_lithology_table_single_space(lines: List[str]) -> Tuple[List[str], Li
         line = line.strip()
         if line.startswith("- "):
             line = line[2:].strip()
-        if not line or line.lower().startswith("sample description") or line.lower().startswith("lithology") or line.lower().startswith("from to"):
+        lower = line.lower()
+        if (
+            not line
+            or line.startswith("#")
+            or lower.startswith("sample description")
+            or lower.startswith("lithology")
+            or lower.startswith("soil description")
+            or lower.startswith("from to")
+            or (lower.startswith("depth") and any(w in lower for w in ["from", "to", "description", "lithology"]))
+            or "sample description and lithology" in lower
+        ):
             continue
 
         if "\t" in line:
@@ -465,9 +491,15 @@ def _parse_lithology_table_single_space(lines: List[str]) -> Tuple[List[str], Li
             depth_to = match.group(2)
             description = match.group(3).strip()
         else:
-            depth_from = ""
-            depth_to = ""
-            description = line
+            single_match = re.match(r"^(\d+(?:\.\d+)?['\"]?)\s+([A-Za-z].*)$", line)
+            if single_match:
+                depth_from = single_match.group(1)
+                depth_to = ""
+                description = single_match.group(2).strip()
+            else:
+                depth_from = ""
+                depth_to = ""
+                description = line
 
         rows.append({
             "Depth From": depth_from,
@@ -492,17 +524,112 @@ def build_document_from_sections(raw_text: str) -> Document:
         else:
             doc_sections.append(Section(name="Header", type="raw_text", text=header_text, raw_text=header_text))
 
-    # Boring Advancement
-    if "boring_advancement" in sections_map:
-        adv_text = sections_map["boring_advancement"]
-        fields = extract_key_value_pairs(adv_text)
-        if fields:
-            doc_sections.append(Section(name="Boring Advancement", type="key_value", fields=fields, raw_text=adv_text))
-        else:
-            doc_sections.append(Section(name="Boring Advancement", type="raw_text", text=adv_text, raw_text=adv_text))
+    # Unified Boring Log Table (handles unified table from GLM-OCR)
+    if "boring_log_table" in sections_map:
+        table_text = sections_map["boring_log_table"]
+        lines = table_text.splitlines()
+        columns, rows = None, None
+        if _is_table_section(lines):
+            columns, rows = _parse_table(lines)
+        if not columns or not rows:
+            columns, rows = _parse_sample_table_single_space(lines)
 
-    # Sample Data Table
-    if "sample_data_table" in sections_map:
+        if rows:
+            sample_rows = []
+            lith_rows = []
+            for r in rows:
+                def get_col(*aliases):
+                    for a in aliases:
+                        for k, v in r.items():
+                            if k and k.strip().lower() == a.lower() and v is not None:
+                                return v.strip()
+                    return ""
+
+                s_no = get_col("Sample No", "No.", "No", "Sample")
+                f_d = get_col("From", "From Depth")
+                t_d = get_col("To", "To Depth")
+                s_type = get_col("Type", "Sample Type")
+                b1 = get_col("Blow 1", "Blow1", "B1")
+                b2 = get_col("Blow 2", "Blow2", "B2")
+                b3 = get_col("Blow 3", "Blow3", "B3")
+                b4 = get_col("Blow 4", "Blow4", "B4")
+                n_val = get_col("N-Val", "N-Value", "N Value", "N")
+                rec = get_col("Recovery", "Rec", "Recovery (inches)", "Recovery (m³)", "Recovery (m3)", "Recovery(m³)")
+
+                if s_no or f_d or t_d or b1 or b2 or b3 or b4 or rec or s_type:
+                    sample_rows.append({
+                        "No.": s_no,
+                        "From": f_d,
+                        "To": t_d,
+                        "Type": s_type,
+                        "Blow 1": b1,
+                        "Blow 2": b2,
+                        "Blow 3": b3,
+                        "Blow 4": b4,
+                        "Recovery": rec,
+                    })
+
+                d_from = get_col("Depth From", "Strata From", "D. From")
+                d_to = get_col("Depth To", "Strata To", "D. To")
+                desc = get_col("Lithology Description", "Description", "Lithology", "Sample Description and Lithology", "Sample Description")
+                depth_val = get_col("Depth", "Depth (ft)", "Depth(ft)", "Depth From - To", "Depth Range")
+
+                if depth_val:
+                    m_depth = re.match(r"^(\d+(?:\.\d+)?['\"]?)\s*[-–\s]\s*(\d+(?:\.\d+)?['\"]?)\s*(.*)$", depth_val)
+                    if m_depth:
+                        if not d_from:
+                            d_from = m_depth.group(1)
+                        if not d_to:
+                            d_to = m_depth.group(2)
+                        rem = m_depth.group(3).strip()
+                        if rem and not desc:
+                            desc = rem
+                    elif any(c.isalpha() for c in depth_val) and len(depth_val) > 3:
+                        if not desc:
+                            desc = depth_val
+
+                if desc:
+                    m_desc = re.match(r"^(\d+(?:\.\d+)?['\"]?)\s*[-–\s]\s*(\d+(?:\.\d+)?['\"]?)\s*(.*)$", desc)
+                    if m_desc:
+                        if not d_from:
+                            d_from = m_desc.group(1)
+                        if not d_to:
+                            d_to = m_desc.group(2)
+                        if m_desc.group(3).strip():
+                            desc = m_desc.group(3).strip()
+
+                # If Depth From was omitted on lithology side but sample had From/To, borrow it if desc exists
+                if desc and not d_from and f_d:
+                    d_from = f_d
+                if desc and not d_to and t_d:
+                    d_to = t_d
+
+                if d_from or d_to or desc:
+                    lith_rows.append({
+                        "Depth From": d_from,
+                        "Depth To": d_to,
+                        "Description": desc,
+                    })
+
+            if sample_rows:
+                doc_sections.append(Section(
+                    name="Sample Data Table",
+                    type="table",
+                    columns=["No.", "From", "To", "Type", "Blow 1", "Blow 2", "Blow 3", "Blow 4", "Recovery"],
+                    rows=sample_rows,
+                    raw_text=table_text
+                ))
+            if lith_rows:
+                doc_sections.append(Section(
+                    name="Lithology / Sample Description Table",
+                    type="table",
+                    columns=["Depth From", "Depth To", "Description"],
+                    rows=lith_rows,
+                    raw_text=table_text
+                ))
+
+    # Sample Data Table (fallback if not already populated by unified table)
+    if "sample_data_table" in sections_map and "boring_log_table" not in sections_map:
         sample_text = sections_map["sample_data_table"]
         lines = sample_text.splitlines()
         columns, rows = None, None
@@ -516,8 +643,8 @@ def build_document_from_sections(raw_text: str) -> Document:
         else:
             doc_sections.append(Section(name="Sample Data Table", type="raw_text", text=sample_text, raw_text=sample_text))
 
-    # Lithology Data Table
-    if "lithology_data_table" in sections_map:
+    # Lithology Data Table (fallback if not already populated by unified table)
+    if "lithology_data_table" in sections_map and "boring_log_table" not in sections_map:
         lith_text = sections_map["lithology_data_table"]
         lines = lith_text.splitlines()
         columns, rows = None, None
@@ -531,6 +658,15 @@ def build_document_from_sections(raw_text: str) -> Document:
         else:
             doc_sections.append(Section(name="Lithology / Sample Description Table", type="raw_text",
                                         text=lith_text, raw_text=lith_text))
+
+    # Boring Advancement
+    if "boring_advancement" in sections_map:
+        adv_text = sections_map["boring_advancement"]
+        fields = extract_key_value_pairs(adv_text)
+        if fields:
+            doc_sections.append(Section(name="Boring Advancement", type="key_value", fields=fields, raw_text=adv_text))
+        else:
+            doc_sections.append(Section(name="Boring Advancement", type="raw_text", text=adv_text, raw_text=adv_text))
 
     # Surface Cover & Thickness
     if "surface_cover_thickness" in sections_map:
