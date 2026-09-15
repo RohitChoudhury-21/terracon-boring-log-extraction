@@ -1,0 +1,6 @@
+images/
+preprocessed/
+outputs/
+__pycache__/
+*.pycdata/uploads/
+data/outputs/
