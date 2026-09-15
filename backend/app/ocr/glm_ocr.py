@@ -1,45 +1,54 @@
 from pathlib import Path
- 
+import time
+
 from transformers import (
     AutoProcessor,
     GlmOcrForConditionalGeneration,
 )
- 
- 
+
+
 MODEL_ID = "zai-org/GLM-OCR"
- 
-OCR_PROMPT = "Transcribe all text and tables in this geotechnical boring log document accurately. Use Markdown tables (| Col 1 | Col 2 |) for tables and 'Key: Value' format for header fields."
- 
- 
+
+DEFAULT_OCR_PROMPT = "Text Recognition:"
+
+
 print("Loading GLM-OCR...")
- 
+
 processor = AutoProcessor.from_pretrained(
     MODEL_ID
 )
- 
+
 model = GlmOcrForConditionalGeneration.from_pretrained(
     MODEL_ID,
     device_map="cpu",
 )
- 
+
 print("Model loaded successfully!")
- 
- 
-def run_ocr(image_path: str) -> str:
+
+
+def run_ocr(
+    image_path: str,
+    prompt: str = DEFAULT_OCR_PROMPT
+) -> str:
     """
     Run GLM-OCR on one boring-log image.
- 
+
+    Args:
+        image_path: Path to the image.
+        prompt: OCR prompt.
+                Defaults to "Text Recognition:".
+
     Returns:
         Raw OCR text.
     """
- 
+
     image_path = Path(image_path)
- 
+
     if not image_path.exists():
         raise FileNotFoundError(
             f"Image not found: {image_path}"
         )
- 
+
     messages = [
         {
             "role": "user",
@@ -50,12 +59,12 @@ def run_ocr(image_path: str) -> str:
                 },
                 {
                     "type": "text",
-                    "text": OCR_PROMPT,
+                    "text": prompt,
                 },
             ],
         }
     ]
- 
+
     inputs = processor.apply_chat_template(
         messages,
         tokenize=True,
@@ -63,41 +72,44 @@ def run_ocr(image_path: str) -> str:
         return_dict=True,
         return_tensors="pt",
     )
- 
+
+    print(f"Running OCR on: {image_path.name}")
+    print(f"Prompt: {prompt}")
+
+    start_time = time.time()
+
+    try:
+        output = model.generate(
+            **inputs,
+            max_new_tokens=1024,
+            do_sample=False,
+        )
+
+    except Exception as exc:
+        raise RuntimeError(
+            f"GLM-OCR generation failed "
+            f"on {image_path.name}: {exc}"
+        ) from exc
+
+    elapsed = time.time() - start_time
+
     print(
-        f"Running OCR on: {image_path.name}"
+        f"OCR latency: {elapsed:.2f} seconds"
     )
- 
-    output = model.generate(
-        **inputs,
-        max_new_tokens=2048,
-        do_sample=False,
-    )
- 
+
     generated_tokens = output[0][
         inputs["input_ids"].shape[-1]:
     ]
- 
+
     result = processor.decode(
         generated_tokens,
         skip_special_tokens=True,
     )
- 
-    return result.strip()
- 
- 
-if __name__ == "__main__":
- 
-    image_path = Path(
-        "data/uploads/1-1037R-A.jpg"
-    )
- 
-    result = run_ocr(
-        str(image_path)
-    )
- 
+
+    result = result.strip()
+
     print(
-        "\n========== GLM-OCR RESULT ==========\n"
+        f"OCR characters: {len(result)}"
     )
- 
-    print(result)
+
+    return result
